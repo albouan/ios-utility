@@ -478,6 +478,12 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
         BOOL ok = [s copyItemAtURL:src toDestinationURL:tempDest error:&err];
         if (!ok || err) {
           hadError = YES;
+          [fm removeItemAtURL:tempDest error:NULL];
+          dispatch_async(dispatch_get_main_queue(), ^{
+            [s dismissProgress];
+            [s showSimpleAlertWithTitle:@"Copy Failed"
+                                message:err.localizedDescription ?: @"An unknown error occurred during copy."];
+          });
           break;
         }
 
@@ -1101,16 +1107,20 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
 - (void)showSimpleAlertWithTitle:(NSString *)title message:(NSString *)msg {
   dispatch_async(dispatch_get_main_queue(), ^{
-    UIAlertController *a = [UIAlertController alertControllerWithTitle:title
-                                                               message:msg
-                                                        preferredStyle:UIAlertControllerStyleAlert];
-    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    void (^presentAlertBlock)(void) = ^{
+      UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                     message:msg
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+      [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+      [self presentViewController:alert animated:YES completion:nil];
+    };
 
-    UIViewController *top = self;
-    while (top.presentedViewController) {
-      top = top.presentedViewController;
+    if (self.progressAlert && self.presentedViewController == self.progressAlert) {
+      self.progressAlert = nil;
+      [self dismissViewControllerAnimated:YES completion:presentAlertBlock];
+    } else {
+      presentAlertBlock();
     }
-    [top presentViewController:a animated:YES completion:nil];
   });
 }
 
