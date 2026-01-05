@@ -1,46 +1,5 @@
 #import "DocumentsViewController.h"
-
-#if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
-#define HAS_UTTYPE 1
-#else
-#define HAS_UTTYPE 0
-#endif
-
-#if __has_include(<MobileCoreServices/MobileCoreServices.h>)
-#import <MobileCoreServices/MobileCoreServices.h>
-#define HAS_MOBILECORESERVICES 1
-#else
-#define HAS_MOBILECORESERVICES 0
-#endif
-
-static inline NSString *DocumentTypeItem(void) {
-#if HAS_UTTYPE
-  if (@available(iOS 14.0, *)) {
-    UTType *t = UTTypeItem;
-    return t.identifier;
-  }
-#endif
-#if HAS_MOBILECORESERVICES
-  return (__bridge NSString *)kUTTypeItem;
-#else
-  return @"public.item";
-#endif
-}
-
-static inline NSString *DocumentTypeFolder(void) {
-#if HAS_UTTYPE
-  if (@available(iOS 14.0, *)) {
-    UTType *t = UTTypeFolder;
-    return t.identifier;
-  }
-#endif
-#if HAS_MOBILECORESERVICES
-  return (__bridge NSString *)kUTTypeFolder;
-#else
-  return @"public.folder";
-#endif
-}
 
 @interface DocumentsViewController () <UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITableView *tableView;
@@ -209,7 +168,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 - (void)viewDidLoad {
   [super viewDidLoad];
 
-  self.view.backgroundColor = [UIColor whiteColor];
+  self.view.backgroundColor = [UIColor systemBackgroundColor];
 
   self.navigationItem.leftBarButtonItem =
       [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
@@ -218,14 +177,8 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
   UILabel *titleLabel = [[UILabel alloc] init];
   titleLabel.text = @"Documents Browser";
-  if (@available(iOS 11.0, *)) {
-    titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
-  } else {
-    titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
-  }
-  if (@available(iOS 10.0, *)) {
-    titleLabel.adjustsFontForContentSizeCategory = YES;
-  }
+  titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+  titleLabel.adjustsFontForContentSizeCategory = YES;
   titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
   titleLabel.textAlignment = NSTextAlignmentCenter;
 
@@ -250,12 +203,8 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   [self.view addSubview:copyFolderButton];
   [self.view addSubview:self.tableView];
 
-  UILayoutGuide *safe = nil;
-  if (@available(iOS 11.0, *)) {
-    safe = self.view.safeAreaLayoutGuide;
-  } else {
-    safe = self.view.layoutMarginsGuide;
-  }
+  UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+
   [NSLayoutConstraint activateConstraints:@[
     [titleLabel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12.0],
     [titleLabel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
@@ -277,9 +226,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   UILabel *tableHeader = [[UILabel alloc] initWithFrame:CGRectMake(16, 0, self.view.bounds.size.width - 32, 44)];
   UIFont *base = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
   tableHeader.font = [UIFont boldSystemFontOfSize:base.pointSize];
-  if (@available(iOS 10.0, *)) {
-    tableHeader.adjustsFontForContentSizeCategory = YES;
-  }
+  tableHeader.adjustsFontForContentSizeCategory = YES;
   tableHeader.text = @"App Documents:";
   tableHeader.textAlignment = NSTextAlignmentLeft;
   tableHeader.numberOfLines = 1;
@@ -298,120 +245,60 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 #pragma mark - Actions
 
 - (void)copyFile {
-  if (@available(iOS 14.0, *)) {
-    [self presentDocumentPickerForOpeningContentTypes:@[ (id)UTTypeItem ] allowsMultiple:YES];
-  } else {
-    NSString *typeItem = DocumentTypeItem();
-    [self presentDocumentPickerForDocumentTypes:@[ typeItem ] mode:UIDocumentPickerModeImport allowsMultiple:YES];
-  }
+  UIDocumentPickerViewController *picker =
+      [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeItem ]];
+  picker.delegate = self;
+  picker.allowsMultipleSelection = YES;
+  [self presentViewController:picker animated:YES completion:nil];
 }
 
 - (void)copyFolder {
-  if (@available(iOS 14.0, *)) {
-    [self presentDocumentPickerForOpeningContentTypes:@[ (id)UTTypeFolder ] allowsMultiple:NO];
-  } else {
-    NSString *typeFolder = DocumentTypeFolder();
-    [self presentDocumentPickerForDocumentTypes:@[ typeFolder ] mode:UIDocumentPickerModeOpen allowsMultiple:NO];
-  }
-}
-
-- (void)presentDocumentPickerForOpeningContentTypes:(NSArray *)contentTypes allowsMultiple:(BOOL)allows {
-  if (!contentTypes)
-    return;
-  if (@available(iOS 14.0, *)) {
-    UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:contentTypes];
-    picker.delegate = self;
-    if (@available(iOS 11.0, *))
-      picker.allowsMultipleSelection = allows;
-    [self presentViewController:picker animated:YES completion:nil];
-  } else {
-    NSString *fallbackType = DocumentTypeItem();
-    [self presentDocumentPickerForDocumentTypes:@[ fallbackType ]
-                                           mode:UIDocumentPickerModeImport
-                                 allowsMultiple:allows];
-  }
-}
-
-- (void)presentDocumentPickerForDocumentTypes:(NSArray<NSString *> *)types
-                                         mode:(UIDocumentPickerMode)mode
-                               allowsMultiple:(BOOL)allows {
-  UIDocumentPickerViewController *picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types
-                                                                                                  inMode:mode];
+  UIDocumentPickerViewController *picker =
+      [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeFolder ]];
   picker.delegate = self;
-  if (@available(iOS 11.0, *))
-    picker.allowsMultipleSelection = allows;
+  picker.allowsMultipleSelection = NO;
   [self presentViewController:picker animated:YES completion:nil];
 }
 
 #pragma mark - UIDocumentPickerDelegate
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+  [controller dismissViewControllerAnimated:YES completion:nil];
   if (self.exporting) {
     self.exporting = NO;
     return;
   }
 
   if (!urls || urls.count == 0) {
-    [controller dismissViewControllerAnimated:YES completion:nil];
     return;
   }
 
   __weak typeof(self) weakSelf = self;
-  [controller dismissViewControllerAnimated:YES
-                                 completion:^{
-                                   __strong typeof(self) s = weakSelf;
-                                   if (!s)
-                                     return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    __strong typeof(self) s = weakSelf;
+    if (!s)
+      return;
 
-                                   if (urls.count == 1) {
-                                     NSURL *only = urls.firstObject;
-                                     NSNumber *isDirNumber = nil;
-                                     [only getResourceValue:&isDirNumber forKey:NSURLIsDirectoryKey error:NULL];
-                                     BOOL isDir = [isDirNumber boolValue];
-                                     if (isDir) {
-                                       [s startImportFolderFromURL:only];
-                                       return;
-                                     }
-                                   }
+    if (urls.count == 1) {
+      NSURL *only = urls.firstObject;
+      NSNumber *isDirNumber = nil;
+      [only getResourceValue:&isDirNumber forKey:NSURLIsDirectoryKey error:NULL];
+      BOOL isDir = [isDirNumber boolValue];
+      if (isDir) {
+        [s startImportFolderFromURL:only];
+        return;
+      }
+    }
 
-                                   [s startImportFilesFromURLs:urls];
-                                 }];
-}
-
-- (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentAtURL:(NSURL *)url {
-  if (self.exporting) {
-    self.exporting = NO;
-    return;
-  }
-
-  if (!url) {
-    [controller dismissViewControllerAnimated:YES completion:nil];
-    return;
-  }
-
-  __weak typeof(self) weakSelf = self;
-  [controller dismissViewControllerAnimated:YES
-                                 completion:^{
-                                   __strong typeof(self) s = weakSelf;
-                                   if (!s)
-                                     return;
-                                   NSNumber *isDirNumber = nil;
-                                   [url getResourceValue:&isDirNumber forKey:NSURLIsDirectoryKey error:NULL];
-                                   BOOL isDir = [isDirNumber boolValue];
-                                   if (isDir) {
-                                     [s startImportFolderFromURL:url];
-                                   } else {
-                                     [s startImportFilesFromURLs:@[ url ]];
-                                   }
-                                 }];
+    [s startImportFilesFromURLs:urls];
+  });
 }
 
 - (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller {
+  [controller dismissViewControllerAnimated:YES completion:nil];
   if (self.exporting) {
     self.exporting = NO;
   }
-  [self dismissProgress];
   [self reloadDocuments];
 }
 
@@ -445,14 +332,19 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     BOOL hadError = NO;
 
     for (NSURL *src in urls) {
-      if (!s || s.cancelRequested)
+      if (!s)
+        break;
+      __block BOOL shouldCancel = NO;
+      dispatch_sync(s.syncQueue, ^{
+        shouldCancel = s.cancelRequestedBacking;
+      });
+      if (shouldCancel)
         break;
 
       BOOL didStart = [src startAccessingSecurityScopedResource];
       if (!didStart) {
         hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s dismissProgress];
           [s showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected file(s)."];
         });
         break;
@@ -468,7 +360,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
         if ([fm fileExistsAtPath:finalDest.path] || [fm fileExistsAtPath:tempDest.path]) {
           hadError = YES;
           dispatch_async(dispatch_get_main_queue(), ^{
-            [s dismissProgress];
             [s showFileExistsAlert:name];
           });
           break;
@@ -480,7 +371,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
           hadError = YES;
           [fm removeItemAtURL:tempDest error:NULL];
           dispatch_async(dispatch_get_main_queue(), ^{
-            [s dismissProgress];
             [s showSimpleAlertWithTitle:@"Copy Failed"
                                 message:err.localizedDescription ?: @"An unknown error occurred during copy."];
           });
@@ -504,7 +394,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!s)
         return;
-      [s dismissProgress];
       [s reloadDocuments];
       if (s.cancelRequested) {
         [s showSimpleAlertWithTitle:@"Copy File(s)" message:@"Operation canceled."];
@@ -532,7 +421,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     if (!didStart) {
       hadError = YES;
       dispatch_async(dispatch_get_main_queue(), ^{
-        [s dismissProgress];
         [s showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected folder."];
       });
       return;
@@ -549,7 +437,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       if ([fm fileExistsAtPath:finalDest.path] || [fm fileExistsAtPath:tempDest.path]) {
         hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s dismissProgress];
           [s showFileExistsAlert:folderName];
         });
         return;
@@ -561,7 +448,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       if (!ok || err) {
         hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s dismissProgress];
           [s showSimpleAlertWithTitle:@"Copy Folder" message:err.localizedDescription ?: @"Folder copy failed."];
         });
         return;
@@ -583,7 +469,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     dispatch_async(dispatch_get_main_queue(), ^{
       if (!s)
         return;
-      [s dismissProgress];
       [s reloadDocuments];
       if (s.cancelRequested) {
         [s showSimpleAlertWithTitle:@"Copy Folder" message:@"Operation canceled."];
@@ -604,172 +489,39 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   __block BOOL success = NO;
   __block NSError *coordErr = nil;
 
-  __weak typeof(self) weakSelf = self;
-  [coordinator
-      coordinateReadingItemAtURL:src
-                         options:0
-                writingItemAtURL:dst
-                         options:NSFileCoordinatorWritingForMerging
-                           error:&coordErr
-                      byAccessor:^(NSURL *_Nonnull coordinatedSrc, NSURL *_Nonnull coordinatedDst) {
-                        __strong typeof(weakSelf) strongSelf = weakSelf;
-                        if (!strongSelf) {
-                          coordErr = [NSError errorWithDomain:NSCocoaErrorDomain
-                                                         code:NSUserCancelledError
-                                                     userInfo:@{NSLocalizedDescriptionKey : @"Owner deallocated"}];
-                          success = NO;
-                          return;
-                        }
+  [coordinator coordinateReadingItemAtURL:src
+                                  options:0
+                         writingItemAtURL:dst
+                                  options:NSFileCoordinatorWritingForMerging
+                                    error:&coordErr
+                               byAccessor:^(NSURL *_Nonnull coordinatedSrc, NSURL *_Nonnull coordinatedDst) {
+                                 NSFileManager *fm = [[NSFileManager alloc] init];
+                                 NSError *err = nil;
 
-                        NSURL *stdSrc = [coordinatedSrc URLByStandardizingPath];
-                        NSURL *stdDst = [coordinatedDst URLByStandardizingPath];
-                        if ([stdSrc isEqual:stdDst]) {
-                          success = YES;
-                          return;
-                        }
+                                 NSURL *parent = [coordinatedDst URLByDeletingLastPathComponent];
+                                 if (![fm fileExistsAtPath:parent.path]) {
+                                   if (![fm createDirectoryAtURL:parent
+                                           withIntermediateDirectories:YES
+                                                            attributes:nil
+                                                                 error:&err]) {
+                                     coordErr = err;
+                                     success = NO;
+                                     return;
+                                   }
+                                 }
 
-                        NSFileManager *fm = [[NSFileManager alloc] init];
-                        NSError *err = nil;
-                        NSNumber *isDirNumber = nil;
-                        BOOL gotResource = [coordinatedSrc getResourceValue:&isDirNumber
-                                                                     forKey:NSURLIsDirectoryKey
-                                                                      error:&err];
-                        if (!gotResource) {
-                          coordErr = err;
-                          NSLog(@"[DocumentsViewController] Failed to get "
-                                @"resource value for %@: %@",
-                                coordinatedSrc, err);
-                          success = NO;
-                          return;
-                        }
-                        BOOL isDir = [isDirNumber boolValue];
+                                 if ([fm fileExistsAtPath:coordinatedDst.path]) {
+                                   [fm removeItemAtURL:coordinatedDst error:NULL];
+                                 }
 
-                        if (!isDir) {
-                          NSURL *parent = [coordinatedDst URLByDeletingLastPathComponent];
-                          if (![fm fileExistsAtPath:parent.path]) {
-                            if (![fm createDirectoryAtURL:parent
-                                    withIntermediateDirectories:YES
-                                                     attributes:nil
-                                                          error:&err]) {
-                              coordErr = err;
-                              success = NO;
-                              return;
-                            }
-                          }
-                          if ([fm fileExistsAtPath:coordinatedDst.path]) {
-                            [fm removeItemAtURL:coordinatedDst error:NULL];
-                          }
-                          BOOL copyOK = [fm copyItemAtURL:coordinatedSrc toURL:coordinatedDst error:&err];
-                          if (!copyOK) {
-                            coordErr = err;
-                            success = NO;
-                            return;
-                          }
-                          success = YES;
-                          return;
-                        }
-
-                        if (![fm fileExistsAtPath:coordinatedDst.path]) {
-                          if (![fm createDirectoryAtURL:coordinatedDst
-                                  withIntermediateDirectories:YES
-                                                   attributes:nil
-                                                        error:&err]) {
-                            coordErr = err;
-                            success = NO;
-                            return;
-                          }
-                        }
-
-                        NSDirectoryEnumerator<NSURL *> *enumerator =
-                            [fm enumeratorAtURL:coordinatedSrc
-                                includingPropertiesForKeys:@[ NSURLIsDirectoryKey ]
-                                                   options:NSDirectoryEnumerationSkipsHiddenFiles
-                                              errorHandler:^BOOL(NSURL *_Nonnull url, NSError *_Nonnull error) {
-                                                NSLog(@"[DocumentsViewController] "
-                                                      @"Enumerator error for %@: %@",
-                                                      url, error);
-                                                return YES;
-                                              }];
-
-                        NSArray<NSString *> *srcComponents = coordinatedSrc.path.pathComponents;
-
-                        for (NSURL *fileURL in enumerator) {
-                          if (strongSelf.cancelRequested) {
-                            [fm removeItemAtURL:coordinatedDst error:NULL];
-                            coordErr = [NSError errorWithDomain:NSCocoaErrorDomain
-                                                           code:NSUserCancelledError
-                                                       userInfo:@{NSLocalizedDescriptionKey : @"User cancelled"}];
-                            success = NO;
-                            return;
-                          }
-
-                          NSArray<NSString *> *fileComponents = fileURL.path.pathComponents;
-                          if (fileComponents.count < srcComponents.count) {
-                            continue;
-                          }
-                          BOOL prefixMatch = YES;
-                          for (NSUInteger i = 0; i < srcComponents.count; ++i) {
-                            if (![srcComponents[i] isEqualToString:fileComponents[i]]) {
-                              prefixMatch = NO;
-                              break;
-                            }
-                          }
-                          if (!prefixMatch) {
-                            continue;
-                          }
-
-                          NSArray<NSString *> *relativeComponents =
-                              (fileComponents.count > srcComponents.count)
-                                  ? [fileComponents
-                                        subarrayWithRange:NSMakeRange(srcComponents.count,
-                                                                      fileComponents.count - srcComponents.count)]
-                                  : @[];
-                          NSString *relative = [NSString pathWithComponents:relativeComponents];
-                          NSURL *targetURL = (relative.length > 0)
-                                                 ? [coordinatedDst URLByAppendingPathComponent:relative]
-                                                 : coordinatedDst;
-
-                          NSNumber *isSubDirNumber = nil;
-                          NSError *resErr = nil;
-                          BOOL gotSub = [fileURL getResourceValue:&isSubDirNumber
-                                                           forKey:NSURLIsDirectoryKey
-                                                            error:&resErr];
-                          if (!gotSub) {
-                            coordErr = resErr;
-                            [fm removeItemAtURL:coordinatedDst error:NULL];
-                            success = NO;
-                            return;
-                          }
-                          BOOL isSubDir = [isSubDirNumber boolValue];
-                          if (isSubDir) {
-                            if (![fm fileExistsAtPath:targetURL.path]) {
-                              if (![fm createDirectoryAtURL:targetURL
-                                      withIntermediateDirectories:YES
-                                                       attributes:nil
-                                                            error:&resErr]) {
-                                coordErr = resErr;
-                                [fm removeItemAtURL:coordinatedDst error:NULL];
-                                success = NO;
-                                return;
-                              }
-                            }
-                          } else {
-                            if ([fm fileExistsAtPath:targetURL.path]) {
-                              [fm removeItemAtURL:targetURL error:NULL];
-                            }
-                            NSError *fileErr = nil;
-                            BOOL fileOK = [fm copyItemAtURL:fileURL toURL:targetURL error:&fileErr];
-                            if (!fileOK) {
-                              coordErr = fileErr;
-                              [fm removeItemAtURL:coordinatedDst error:NULL];
-                              success = NO;
-                              return;
-                            }
-                          }
-                        }
-
-                        success = YES;
-                      }];
+                                 BOOL copyOK = [fm copyItemAtURL:coordinatedSrc toURL:coordinatedDst error:&err];
+                                 if (copyOK) {
+                                   success = YES;
+                                 } else {
+                                   coordErr = err;
+                                   success = NO;
+                                 }
+                               }];
 
   if (!success && outError) {
     *outError = coordErr;
@@ -837,12 +589,8 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
     UIImage *icon = [DocumentsViewController iconForURL:itemURL size:CGSizeMake(28, 28)];
     if (icon) {
-      if (@available(iOS 13.0, *)) {
-        icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-        cell.imageView.tintColor = [UIColor systemBlueColor];
-      } else {
-        cell.imageView.tintColor = nil;
-      }
+      icon = [icon imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+      cell.imageView.tintColor = [UIColor systemBlueColor];
       cell.imageView.image = icon;
     } else {
       cell.imageView.image = nil;
@@ -871,44 +619,32 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
   __weak typeof(self) weakSelf = self;
 
-  UIAlertAction *copy = [UIAlertAction
-      actionWithTitle:@"Copy"
-                style:UIAlertActionStyleDefault
-              handler:^(UIAlertAction *_Nonnull action) {
-                __strong typeof(self) s = weakSelf;
-                if (!s)
-                  return;
+  UIAlertAction *copy =
+      [UIAlertAction actionWithTitle:@"Copy"
+                               style:UIAlertActionStyleDefault
+                             handler:^(UIAlertAction *_Nonnull action) {
+                               __strong typeof(self) s = weakSelf;
+                               if (!s)
+                                 return;
 
-                NSURL *url = itemURL;
-                CGRect srcRect = sourceRect;
-                if (!url)
-                  return;
+                               NSURL *url = itemURL;
+                               CGRect srcRect = sourceRect;
+                               if (!url)
+                                 return;
 
-                if (@available(iOS 14.0, *)) {
-                  if ([UIDocumentPickerViewController instancesRespondToSelector:@selector(initForExportingURLs:
-                                                                                                         asCopy:)]) {
-                    UIDocumentPickerViewController *picker =
-                        [[UIDocumentPickerViewController alloc] initForExportingURLs:@[ url ] asCopy:YES];
-                    picker.delegate = s;
-                    if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-                      picker.modalPresentationStyle = UIModalPresentationFormSheet;
-                      picker.popoverPresentationController.sourceView = s.view;
-                      picker.popoverPresentationController.sourceRect = srcRect;
-                    }
-                    s.exporting = YES;
-                    [s presentViewController:picker animated:YES completion:nil];
-                    return;
-                  }
-                }
+                               UIDocumentPickerViewController *picker =
+                                   [[UIDocumentPickerViewController alloc] initForExportingURLs:@[ url ] asCopy:YES];
+                               picker.delegate = s;
 
-                UIActivityViewController *av = [[UIActivityViewController alloc] initWithActivityItems:@[ url ]
-                                                                                 applicationActivities:nil];
-                if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-                  av.popoverPresentationController.sourceView = s.view;
-                  av.popoverPresentationController.sourceRect = srcRect;
-                }
-                [s presentViewController:av animated:YES completion:nil];
-              }];
+                               UIPopoverPresentationController *pop = picker.popoverPresentationController;
+                               if (pop) {
+                                 pop.sourceView = tableView;
+                                 pop.sourceRect = srcRect;
+                               }
+
+                               s.exporting = YES;
+                               [s presentViewController:picker animated:YES completion:nil];
+                             }];
   [sheet addAction:copy];
 
   UIAlertAction *rename = [UIAlertAction
@@ -1016,9 +752,10 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
   [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
 
-  if ([UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad) {
-    sheet.popoverPresentationController.sourceView = tableView;
-    sheet.popoverPresentationController.sourceRect = sourceRect;
+  UIPopoverPresentationController *pop = sheet.popoverPresentationController;
+  if (pop) {
+    pop.sourceView = tableView;
+    pop.sourceRect = sourceRect;
   }
 
   [self presentViewController:sheet animated:YES completion:nil];
@@ -1046,14 +783,9 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
                                                                  message:@"\n\n\n"
                                                           preferredStyle:UIAlertControllerStyleAlert];
 
-  UIActivityIndicatorView *indicator;
-  if (@available(iOS 13.0, *)) {
-    indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
-    indicator.color = [UIColor systemGrayColor];
-  } else {
-    indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge];
-    indicator.color = [UIColor grayColor];
-  }
+  UIActivityIndicatorView *indicator =
+      [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+  indicator.color = [UIColor systemGrayColor];
   [indicator startAnimating];
   indicator.translatesAutoresizingMaskIntoConstraints = NO;
   [alert.view addSubview:indicator];
@@ -1092,14 +824,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   UIViewController *presented = self.presentedViewController;
   UIAlertController *stored = self.progressAlert;
   if (presented && stored && presented == stored) {
-    __weak typeof(self) weakSelf = self;
-    [self dismissViewControllerAnimated:YES
-                             completion:^{
-                               __strong typeof(weakSelf) s = weakSelf;
-                               if (s)
-                                 s.progressAlert = nil;
-                             }];
-    return;
+    [self dismissViewControllerAnimated:YES completion:nil];
   }
 
   self.progressAlert = nil;
@@ -1107,7 +832,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
 - (void)showSimpleAlertWithTitle:(NSString *)title message:(NSString *)msg {
   dispatch_async(dispatch_get_main_queue(), ^{
-    void (^presentAlertBlock)(void) = ^{
+    void (^presentFinalAlert)(void) = ^{
       UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                      message:msg
                                                               preferredStyle:UIAlertControllerStyleAlert];
@@ -1115,11 +840,12 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       [self presentViewController:alert animated:YES completion:nil];
     };
 
-    if (self.progressAlert && self.presentedViewController == self.progressAlert) {
+    UIAlertController *progress = self.progressAlert;
+    if (progress && self.presentedViewController == progress) {
       self.progressAlert = nil;
-      [self dismissViewControllerAnimated:YES completion:presentAlertBlock];
+      [self dismissViewControllerAnimated:YES completion:presentFinalAlert];
     } else {
-      presentAlertBlock();
+      presentFinalAlert();
     }
   });
 }
@@ -1179,28 +905,11 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   BOOL ok = [url getResourceValue:&isDirNumber forKey:NSURLIsDirectoryKey error:&err];
   BOOL isDir = (ok && isDirNumber) ? [isDirNumber boolValue] : NO;
 
-  if (@available(iOS 13.0, *)) {
-    NSString *name = isDir ? @"folder" : @"doc.text";
-    CGFloat pointSize = roundf(MIN(size.width, size.height) * 0.75);
-    UIImageSymbolConfiguration *config =
-        [UIImageSymbolConfiguration configurationWithPointSize:pointSize weight:UIImageSymbolWeightRegular];
-    UIImage *img = [UIImage systemImageNamed:name withConfiguration:config];
-    if (img) {
-      return img;
-    }
-  }
-
-  NSString *emoji = isDir ? @"📁" : @"📄";
-  UIGraphicsBeginImageContextWithOptions(size, NO, 0.0);
-  UIFont *font = [UIFont systemFontOfSize:roundf(size.height * 0.9)];
-  NSDictionary *attrs = @{NSFontAttributeName : font};
-  CGSize textSize = [emoji sizeWithAttributes:attrs];
-  CGRect r = CGRectMake((size.width - textSize.width) / 2.0, (size.height - textSize.height) / 2.0, textSize.width,
-                        textSize.height);
-  [emoji drawInRect:r withAttributes:attrs];
-  UIImage *result = UIGraphicsGetImageFromCurrentImageContext();
-  UIGraphicsEndImageContext();
-  return result;
+  NSString *name = isDir ? @"folder" : @"doc.text";
+  CGFloat pointSize = roundf(MIN(size.width, size.height) * 0.75);
+  UIImageSymbolConfiguration *config =
+      [UIImageSymbolConfiguration configurationWithPointSize:pointSize weight:UIImageSymbolWeightRegular];
+  return [UIImage systemImageNamed:name withConfiguration:config];
 }
 
 @end
