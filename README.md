@@ -8,6 +8,7 @@ A lightweight iOS file browser for your app's Documents directory with import/ex
 - Security-scoped resource handling for external files
 - Basic file operations (rename, delete, export)
 - Thread-safe implementation with proper iOS compatibility
+- Minimum iOS: 15.0+
 
 ### Quick usage
 - Present the controller:

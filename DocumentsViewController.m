@@ -3,6 +3,8 @@
 
 @interface DocumentsViewController () <UITableViewDelegate, UITableViewDataSource, UIDocumentPickerDelegate>
 @property(nonatomic, strong) UITableView *tableView;
+@property(nonatomic, strong) UIButton *fileCopyButton;
+@property(nonatomic, strong) UIButton *folderCopyButton;
 @property(nonatomic) dispatch_queue_t syncQueue;
 @property(nonatomic, assign) BOOL cancelRequestedBacking;
 @property(nonatomic, assign) BOOL exportingBacking;
@@ -159,6 +161,24 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   return value;
 }
 
+- (BOOL)isBusy {
+  // Treat "progress showing" as "operation in progress".
+  return (self.progressAlert != nil);
+}
+
+- (void)updateUIEnabled:(BOOL)enabled {
+  // Disable interactions that can start overlapping operations or dismiss the VC mid-copy.
+  self.tableView.userInteractionEnabled = enabled;
+  self.fileCopyButton.enabled = enabled;
+  self.folderCopyButton.enabled = enabled;
+  self.navigationItem.leftBarButtonItem.enabled = enabled;
+
+  // Prevent swipe-to-dismiss while copying (iOS 13+).
+  if (self.navigationController) {
+    self.navigationController.modalInPresentation = !enabled;
+  }
+}
+
 + (void)launchFrom:(UIViewController *)presenter {
   DocumentsViewController *vc = [[DocumentsViewController alloc] init];
   UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
@@ -182,15 +202,15 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
   titleLabel.textAlignment = NSTextAlignmentCenter;
 
-  UIButton *copyFileButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  [copyFileButton setTitle:@"Copy File to App Documents" forState:UIControlStateNormal];
-  [copyFileButton addTarget:self action:@selector(copyFile) forControlEvents:UIControlEventTouchUpInside];
-  copyFileButton.translatesAutoresizingMaskIntoConstraints = NO;
+  self.fileCopyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  [self.fileCopyButton setTitle:@"Copy File to App Documents" forState:UIControlStateNormal];
+  [self.fileCopyButton addTarget:self action:@selector(copyFile) forControlEvents:UIControlEventTouchUpInside];
+  self.fileCopyButton.translatesAutoresizingMaskIntoConstraints = NO;
 
-  UIButton *copyFolderButton = [UIButton buttonWithType:UIButtonTypeSystem];
-  [copyFolderButton setTitle:@"Copy Folder to App Documents" forState:UIControlStateNormal];
-  [copyFolderButton addTarget:self action:@selector(copyFolder) forControlEvents:UIControlEventTouchUpInside];
-  copyFolderButton.translatesAutoresizingMaskIntoConstraints = NO;
+  self.folderCopyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+  [self.folderCopyButton setTitle:@"Copy Folder to App Documents" forState:UIControlStateNormal];
+  [self.folderCopyButton addTarget:self action:@selector(copyFolder) forControlEvents:UIControlEventTouchUpInside];
+  self.folderCopyButton.translatesAutoresizingMaskIntoConstraints = NO;
 
   self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
   self.tableView.delegate = self;
@@ -199,8 +219,8 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
 
   [self.view addSubview:titleLabel];
-  [self.view addSubview:copyFileButton];
-  [self.view addSubview:copyFolderButton];
+  [self.view addSubview:self.fileCopyButton];
+  [self.view addSubview:self.folderCopyButton];
   [self.view addSubview:self.tableView];
 
   UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
@@ -209,15 +229,15 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     [titleLabel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:12.0],
     [titleLabel.centerXAnchor constraintEqualToAnchor:safe.centerXAnchor],
 
-    [copyFileButton.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:12.0],
-    [copyFileButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0],
-    [copyFileButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0],
+    [self.fileCopyButton.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:12.0],
+    [self.fileCopyButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0],
+    [self.fileCopyButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0],
 
-    [copyFolderButton.topAnchor constraintEqualToAnchor:copyFileButton.bottomAnchor constant:8.0],
-    [copyFolderButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0],
-    [copyFolderButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0],
+    [self.folderCopyButton.topAnchor constraintEqualToAnchor:self.fileCopyButton.bottomAnchor constant:8.0],
+    [self.folderCopyButton.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0],
+    [self.folderCopyButton.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0],
 
-    [self.tableView.topAnchor constraintEqualToAnchor:copyFolderButton.bottomAnchor constant:12.0],
+    [self.tableView.topAnchor constraintEqualToAnchor:self.folderCopyButton.bottomAnchor constant:12.0],
     [self.tableView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
     [self.tableView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
     [self.tableView.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor]
@@ -234,17 +254,23 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   self.tableView.tableHeaderView = tableHeader;
 
   [self cleanUpCopyingArtifacts];
-
   [self reloadDocuments];
 }
 
 - (void)close {
+  // If a copy is active, don't allow dismissing the VC (prevents UI calls after dismissal).
+  if ([self isBusy]) {
+    return;
+  }
   [self dismissViewControllerAnimated:YES completion:nil];
 }
 
 #pragma mark - Actions
 
 - (void)copyFile {
+  if ([self isBusy]) {
+    return;
+  }
   UIDocumentPickerViewController *picker =
       [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeItem ]];
   picker.delegate = self;
@@ -253,6 +279,9 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 }
 
 - (void)copyFolder {
+  if ([self isBusy]) {
+    return;
+  }
   UIDocumentPickerViewController *picker =
       [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[ UTTypeFolder ]];
   picker.delegate = self;
@@ -345,7 +374,9 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       if (!didStart) {
         hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected file(s)."];
+          __strong typeof(self) ss = weakSelf;
+          if (ss)
+            [ss showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected file(s)."];
         });
         break;
       }
@@ -360,7 +391,9 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
         if ([fm fileExistsAtPath:finalDest.path] || [fm fileExistsAtPath:tempDest.path]) {
           hadError = YES;
           dispatch_async(dispatch_get_main_queue(), ^{
-            [s showFileExistsAlert:name];
+            __strong typeof(self) ss = weakSelf;
+            if (ss)
+              [ss showFileExistsAlert:name];
           });
           break;
         }
@@ -421,7 +454,11 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     if (!didStart) {
       hadError = YES;
       dispatch_async(dispatch_get_main_queue(), ^{
-        [s showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected folder."];
+        __strong typeof(self) ss = weakSelf;
+        if (!ss) return;
+        [ss reloadDocuments];
+        [ss showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected folder."];
+        ss.cancelRequested = NO;
       });
       return;
     }
@@ -437,13 +474,17 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       if ([fm fileExistsAtPath:finalDest.path] || [fm fileExistsAtPath:tempDest.path]) {
         hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s showFileExistsAlert:folderName];
+          __strong typeof(self) ss = weakSelf;
+          if (ss) {
+            [ss reloadDocuments];
+            [ss showFileExistsAlert:folderName];
+            ss.cancelRequested = NO;
+          }
         });
         return;
       }
 
       NSError *err = nil;
-
       BOOL ok = [s copyItemAtURL:url toDestinationURL:tempDest error:&err];
       if (!ok || err) {
         hadError = YES;
@@ -510,8 +551,13 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
                                    }
                                  }
 
+                                 // Safer behavior: never overwrite here.
                                  if ([fm fileExistsAtPath:coordinatedDst.path]) {
-                                   [fm removeItemAtURL:coordinatedDst error:NULL];
+                                   coordErr = [NSError errorWithDomain:NSCocoaErrorDomain
+                                                                  code:NSFileWriteFileExistsError
+                                                              userInfo:@{NSURLErrorKey : coordinatedDst}];
+                                   success = NO;
+                                   return;
                                  }
 
                                  BOOL copyOK = [fm copyItemAtURL:coordinatedSrc toURL:coordinatedDst error:&err];
@@ -606,6 +652,11 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 #pragma mark - Table selection (safeguarded)
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+  if ([self isBusy]) {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    return;
+  }
+
   if (indexPath.row >= self.documentItems.count) {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     return;
@@ -777,14 +828,15 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
   if (self.progressAlert && self.presentedViewController == self.progressAlert)
     return;
+
   self.cancelRequested = NO;
+  [self updateUIEnabled:NO];
 
   UIAlertController *alert = [UIAlertController alertControllerWithTitle:message
                                                                  message:@"\n\n\n"
                                                           preferredStyle:UIAlertControllerStyleAlert];
 
-  UIActivityIndicatorView *indicator =
-      [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+  UIActivityIndicatorView *indicator = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
   indicator.color = [UIColor systemGrayColor];
   [indicator startAnimating];
   indicator.translatesAutoresizingMaskIntoConstraints = NO;
@@ -821,13 +873,24 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     return;
   }
 
-  UIViewController *presented = self.presentedViewController;
   UIAlertController *stored = self.progressAlert;
-  if (presented && stored && presented == stored) {
-    [self dismissViewControllerAnimated:YES completion:nil];
+  if (!stored) {
+    [self updateUIEnabled:YES];
+    return;
   }
 
-  self.progressAlert = nil;
+  UIViewController *presented = self.presentedViewController;
+  if (presented == stored) {
+    [self dismissViewControllerAnimated:YES completion:^{
+      if (self.progressAlert == stored) {
+        self.progressAlert = nil;
+        [self updateUIEnabled:YES];
+      }
+    }];
+  } else {
+    self.progressAlert = nil;
+    [self updateUIEnabled:YES];
+  }
 }
 
 - (void)showSimpleAlertWithTitle:(NSString *)title message:(NSString *)msg {
@@ -843,8 +906,13 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     UIAlertController *progress = self.progressAlert;
     if (progress && self.presentedViewController == progress) {
       self.progressAlert = nil;
-      [self dismissViewControllerAnimated:YES completion:presentFinalAlert];
+      [self dismissViewControllerAnimated:YES
+                               completion:^{
+                                 [self updateUIEnabled:YES];
+                                 presentFinalAlert();
+                               }];
     } else {
+      [self updateUIEnabled:YES];
       presentFinalAlert();
     }
   });
