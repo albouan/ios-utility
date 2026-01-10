@@ -162,18 +162,15 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 }
 
 - (BOOL)isBusy {
-  // Treat "progress showing" as "operation in progress".
   return (self.progressAlert != nil);
 }
 
 - (void)updateUIEnabled:(BOOL)enabled {
-  // Disable interactions that can start overlapping operations or dismiss the VC mid-copy.
   self.tableView.userInteractionEnabled = enabled;
   self.fileCopyButton.enabled = enabled;
   self.folderCopyButton.enabled = enabled;
   self.navigationItem.leftBarButtonItem.enabled = enabled;
 
-  // Prevent swipe-to-dismiss while copying (iOS 13+).
   if (self.navigationController) {
     self.navigationController.modalInPresentation = !enabled;
   }
@@ -258,7 +255,6 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 }
 
 - (void)close {
-  // If a copy is active, don't allow dismissing the VC (prevents UI calls after dismissal).
   if ([self isBusy]) {
     return;
   }
@@ -344,7 +340,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
       if ([seen containsObject:name]) {
         [self showSimpleAlertWithTitle:@"Duplicate files"
                                message:@"Two or more selected files share the same "
-                                       @"name. Rename files before importing."];
+                                       @"name. Rename files before copying."];
         return;
       }
       [seen addObject:name];
@@ -358,15 +354,20 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   __weak typeof(self) weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     __strong typeof(self) s = weakSelf;
-    BOOL hadError = NO;
+    __block BOOL hadError = NO;
 
     for (NSURL *src in urls) {
       if (!s)
         break;
+      
       __block BOOL shouldCancel = NO;
-      dispatch_sync(s.syncQueue, ^{
+      if ([s isOnSyncQueue]) {
         shouldCancel = s.cancelRequestedBacking;
-      });
+      } else {
+        dispatch_sync(s.syncQueue, ^{
+          shouldCancel = s.cancelRequestedBacking;
+        });
+      }
       if (shouldCancel)
         break;
 
@@ -410,10 +411,27 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
           break;
         }
 
-        if (!s.cancelRequested) {
+        __block BOOL isCancelled = NO;
+        if ([s isOnSyncQueue]) {
+          isCancelled = s.cancelRequestedBacking;
+        } else {
+          dispatch_sync(s.syncQueue, ^{
+            isCancelled = s.cancelRequestedBacking;
+          });
+        }
+        if (!isCancelled) {
           if (![fm moveItemAtURL:tempDest toURL:finalDest error:&err]) {
             hadError = YES;
             [fm removeItemAtURL:tempDest error:NULL];
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+              __strong typeof(self) ss = weakSelf;
+              if (ss) {
+                [ss showSimpleAlertWithTitle:@"Copy Failed"
+                                    message:err.localizedDescription ?: @"Failed to finalize copied file."];
+              }
+            });
+            break;
           }
         } else {
           [fm removeItemAtURL:tempDest error:NULL];
@@ -425,15 +443,21 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (!s)
+      __strong typeof(self) ss = weakSelf;
+      if (!ss)
         return;
-      [s reloadDocuments];
-      if (s.cancelRequested) {
-        [s showSimpleAlertWithTitle:@"Copy File(s)" message:@"Operation canceled."];
+
+      BOOL wasCanceled = ss.cancelRequested;
+
+      [ss setExporting:NO];
+      [ss setCancelRequested:NO];
+      [ss reloadDocuments];
+
+      if (!hadError && wasCanceled) {
+        [ss showSimpleAlertWithTitle:@"Canceled" message:@"The copy operation was canceled."];
       } else if (!hadError) {
-        [s showSimpleAlertWithTitle:@"Copy File(s)" message:@"File(s) copied successfully!"];
+        [ss showSimpleAlertWithTitle:@"Copy Complete" message:@"Files copied successfully."];
       }
-      s.cancelRequested = NO;
     });
   });
 }
@@ -441,44 +465,42 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 - (void)startImportFolderFromURL:(NSURL *)url {
   if (!url)
     return;
-  NSURL *docsDir = [self appDocumentsDirectoryURL];
-
+  
   [self showProgressWithMessage:@"Copying folder..."];
 
   __weak typeof(self) weakSelf = self;
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     __strong typeof(self) s = weakSelf;
-    BOOL hadError = NO;
+    if (!s)
+      return;
 
     BOOL didStart = [url startAccessingSecurityScopedResource];
     if (!didStart) {
-      hadError = YES;
       dispatch_async(dispatch_get_main_queue(), ^{
         __strong typeof(self) ss = weakSelf;
-        if (!ss) return;
-        [ss reloadDocuments];
-        [ss showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access selected folder."];
-        ss.cancelRequested = NO;
+        if (ss) {
+          [ss setExporting:NO];
+          [ss setCancelRequested:NO];
+          [ss showSimpleAlertWithTitle:@"Access denied" message:@"Unable to access the selected folder."];
+        }
       });
       return;
     }
 
     @try {
-      NSString *folderName =
-          url.lastPathComponent
-              ?: [NSString stringWithFormat:@"ImportedFolder_%f", [NSDate timeIntervalSinceReferenceDate]];
+      NSString *folderName = url.lastPathComponent;
+      NSURL *docsDir = [s appDocumentsDirectoryURL];
       NSURL *finalDest = [docsDir URLByAppendingPathComponent:folderName];
       NSURL *tempDest = [docsDir URLByAppendingPathComponent:[NSString stringWithFormat:@".%@.copying", folderName]];
 
       NSFileManager *fm = [[NSFileManager alloc] init];
       if ([fm fileExistsAtPath:finalDest.path] || [fm fileExistsAtPath:tempDest.path]) {
-        hadError = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
           __strong typeof(self) ss = weakSelf;
           if (ss) {
-            [ss reloadDocuments];
+            [ss setExporting:NO];
+            [ss setCancelRequested:NO];
             [ss showFileExistsAlert:folderName];
-            ss.cancelRequested = NO;
           }
         });
         return;
@@ -486,40 +508,64 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
       NSError *err = nil;
       BOOL ok = [s copyItemAtURL:url toDestinationURL:tempDest error:&err];
-      if (!ok || err) {
-        hadError = YES;
+
+      BOOL wasCanceled = s.cancelRequested;
+
+      if (wasCanceled) {
+        [fm removeItemAtURL:tempDest error:NULL];
         dispatch_async(dispatch_get_main_queue(), ^{
-          [s showSimpleAlertWithTitle:@"Copy Folder" message:err.localizedDescription ?: @"Folder copy failed."];
+          __strong typeof(self) ss = weakSelf;
+          if (ss) {
+            [ss setExporting:NO];
+            [ss setCancelRequested:NO];
+            [ss reloadDocuments];
+            [ss showSimpleAlertWithTitle:@"Canceled" message:@"The folder copy was canceled."];
+          }
         });
         return;
       }
 
-      if (!s.cancelRequested) {
-        if (![fm moveItemAtURL:tempDest toURL:finalDest error:&err]) {
-          hadError = YES;
-          [fm removeItemAtURL:tempDest error:NULL];
-        }
-      } else {
+      if (!ok || err) {
         [fm removeItemAtURL:tempDest error:NULL];
-      }
-    } @finally {
-      if (didStart)
-        [url stopAccessingSecurityScopedResource];
-    }
-
-    dispatch_async(dispatch_get_main_queue(), ^{
-      if (!s)
+        dispatch_async(dispatch_get_main_queue(), ^{
+          __strong typeof(self) ss = weakSelf;
+          if (ss) {
+            [ss setExporting:NO];
+            [ss setCancelRequested:NO];
+            [ss showSimpleAlertWithTitle:@"Copy Failed"
+                                 message:err.localizedDescription ?: @"An unknown error occurred during folder copy."];
+          }
+        });
         return;
-      [s reloadDocuments];
-      if (s.cancelRequested) {
-        [s showSimpleAlertWithTitle:@"Copy Folder" message:@"Operation canceled."];
-      } else if (hadError) {
-        [s showSimpleAlertWithTitle:@"Copy Folder" message:@"Folder copy failed!"];
-      } else {
-        [s showSimpleAlertWithTitle:@"Copy Folder" message:@"Folder copied successfully!"];
       }
-      s.cancelRequested = NO;
-    });
+
+      if (![fm moveItemAtURL:tempDest toURL:finalDest error:&err]) {
+        [fm removeItemAtURL:tempDest error:NULL];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          __strong typeof(self) ss = weakSelf;
+          if (ss) {
+            [ss setExporting:NO];
+            [ss setCancelRequested:NO];
+            [ss showSimpleAlertWithTitle:@"Copy Failed"
+                                 message:err.localizedDescription ?: @"Failed to finalize copied folder."];
+          }
+        });
+        return;
+      }
+
+      dispatch_async(dispatch_get_main_queue(), ^{
+        __strong typeof(self) ss = weakSelf;
+        if (ss) {
+          [ss setExporting:NO];
+          [ss setCancelRequested:NO];
+          [ss reloadDocuments];
+          [ss showSimpleAlertWithTitle:@"Copy Complete" message:@"Folder copied successfully."];
+        }
+      });
+
+    } @finally {
+      [url stopAccessingSecurityScopedResource];
+    }
   });
 }
 
@@ -530,46 +576,60 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
   __block BOOL success = NO;
   __block NSError *coordErr = nil;
 
+  if (self.cancelRequested) {
+    if (outError) {
+      *outError = [NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil];
+    }
+    return NO;
+  }
+
   [coordinator coordinateReadingItemAtURL:src
                                   options:0
-                         writingItemAtURL:dst
-                                  options:NSFileCoordinatorWritingForMerging
                                     error:&coordErr
-                               byAccessor:^(NSURL *_Nonnull coordinatedSrc, NSURL *_Nonnull coordinatedDst) {
-                                 NSFileManager *fm = [[NSFileManager alloc] init];
-                                 NSError *err = nil;
+                               byAccessor:^(NSURL *newURL) {
+    if (self.cancelRequested) {
+      coordErr = [NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil];
+      return;
+    }
 
-                                 NSURL *parent = [coordinatedDst URLByDeletingLastPathComponent];
-                                 if (![fm fileExistsAtPath:parent.path]) {
-                                   if (![fm createDirectoryAtURL:parent
-                                           withIntermediateDirectories:YES
-                                                            attributes:nil
-                                                                 error:&err]) {
-                                     coordErr = err;
-                                     success = NO;
-                                     return;
-                                   }
-                                 }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if ([fm fileExistsAtPath:dst.path]) {
+      coordErr = [NSError errorWithDomain:NSCocoaErrorDomain
+                                     code:NSFileWriteFileExistsError
+                                 userInfo:@{NSURLErrorKey : dst}];
+      success = NO;
+      return;
+    }
 
-                                 // Safer behavior: never overwrite here.
-                                 if ([fm fileExistsAtPath:coordinatedDst.path]) {
-                                   coordErr = [NSError errorWithDomain:NSCocoaErrorDomain
-                                                                  code:NSFileWriteFileExistsError
-                                                              userInfo:@{NSURLErrorKey : coordinatedDst}];
-                                   success = NO;
-                                   return;
-                                 }
+    BOOL isDir = NO;
+    if ([fm fileExistsAtPath:newURL.path isDirectory:&isDir] && isDir) {
+      if (![fm createDirectoryAtURL:dst withIntermediateDirectories:YES attributes:nil error:&coordErr]) {
+        return;
+      }
+      NSArray<NSURL *> *children = [fm contentsOfDirectoryAtURL:newURL
+                                      includingPropertiesForKeys:@[ NSURLNameKey ]
+                                                         options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                           error:&coordErr];
+      if (coordErr) {
+        return;
+      }
+      for (NSURL *childSrc in children) {
+        if (self.cancelRequested) {
+          coordErr = [NSError errorWithDomain:NSCocoaErrorDomain code:NSUserCancelledError userInfo:nil];
+          return;
+        }
+        NSURL *childDst = [dst URLByAppendingPathComponent:childSrc.lastPathComponent];
+        if (![self copyItemAtURL:childSrc toDestinationURL:childDst error:&coordErr]) {
+          return;
+        }
+      }
+      success = YES;
+    } else {
+      success = [fm copyItemAtURL:newURL toURL:dst error:&coordErr];
+    }
+  }];
 
-                                 BOOL copyOK = [fm copyItemAtURL:coordinatedSrc toURL:coordinatedDst error:&err];
-                                 if (copyOK) {
-                                   success = YES;
-                                 } else {
-                                   coordErr = err;
-                                   success = NO;
-                                 }
-                               }];
-
-  if (!success && outError) {
+  if (!success && outError && !*outError) {
     *outError = coordErr;
   } else if (!success) {
     NSLog(@"[DocumentsViewController] copy failed for %@ -> %@ : %@", src, dst, coordErr);
@@ -724,6 +784,7 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
                                                   return;
                                                 NSURL *dest = [itemURL URLByDeletingLastPathComponent];
                                                 dest = [dest URLByAppendingPathComponent:newName];
+                                                
                                                 if ([[NSFileManager defaultManager] fileExistsAtPath:dest.path]) {
                                                   dispatch_async(dispatch_get_main_queue(), ^{
                                                     UIAlertController *errAlert = [UIAlertController
@@ -739,26 +800,41 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
                                                   });
                                                   return;
                                                 }
-                                                NSError *mvErr = nil;
-                                                if (![[NSFileManager defaultManager] moveItemAtURL:itemURL
-                                                                                             toURL:dest
-                                                                                             error:&mvErr]) {
+                                                
+                                                [ss showProgressWithMessage:@"Renaming..."];
+                                                
+                                                dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                                                  __strong typeof(self) sss = weakSelf;
+                                                  if (!sss) return; 
+                                                  
+                                                  NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                                                  __block NSError *mvErr = nil;
+                                                  __block BOOL success = NO;
+                                                  
+                                                  [coordinator coordinateWritingItemAtURL:itemURL
+                                                                                  options:NSFileCoordinatorWritingForMoving
+                                                                         writingItemAtURL:dest
+                                                                                  options:NSFileCoordinatorWritingForReplacing
+                                                                                    error:&mvErr
+                                                                               byAccessor:^(NSURL *srcURL, NSURL *dstURL) {
+                                                    NSFileManager *fm = [[NSFileManager alloc] init];
+                                                    success = [fm moveItemAtURL:srcURL toURL:dstURL error:&mvErr];
+                                                  }];
+                                                  
                                                   dispatch_async(dispatch_get_main_queue(), ^{
-                                                    UIAlertController *errAlert = [UIAlertController
-                                                        alertControllerWithTitle:@"Rename failed"
-                                                                         message:mvErr.localizedDescription
-                                                                  preferredStyle:UIAlertControllerStyleAlert];
-                                                    [errAlert addAction:[UIAlertAction
-                                                                            actionWithTitle:@"OK"
-                                                                                      style:UIAlertActionStyleCancel
-                                                                                    handler:nil]];
-                                                    [ss presentViewController:errAlert animated:YES completion:nil];
+                                                    __strong typeof(self) sss = weakSelf;
+                                                    if (!sss) return;
+                                                    
+                                                    [sss reloadDocuments];
+                                                    
+                                                    if (!success) {
+                                                      [sss showSimpleAlertWithTitle:@"Rename failed"
+                                                                            message:mvErr.localizedDescription ?: @"Unknown error"];
+                                                    } else {
+                                                      [sss showSimpleAlertWithTitle:@"Renamed" message:@"Item was renamed successfully."];
+                                                    }
                                                   });
-                                                } else {
-                                                  dispatch_async(dispatch_get_main_queue(), ^{
-                                                    [ss reloadDocuments];
-                                                  });
-                                                }
+                                                });
                                               }]];
                 [s presentViewController:prompt animated:YES completion:nil];
               }];
@@ -781,21 +857,41 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
                                        actionWithTitle:@"Delete"
                                                  style:UIAlertActionStyleDestructive
                                                handler:^(UIAlertAction *_Nonnull act) {
-                                                 NSError *delErr = nil;
-                                                 if (![[NSFileManager defaultManager] removeItemAtURL:itemURL
-                                                                                                error:&delErr]) {
-                                                   UIAlertController *errAlert = [UIAlertController
-                                                       alertControllerWithTitle:@"Delete failed"
-                                                                        message:delErr.localizedDescription
-                                                                 preferredStyle:UIAlertControllerStyleAlert];
-                                                   [errAlert
-                                                       addAction:[UIAlertAction actionWithTitle:@"OK"
-                                                                                          style:UIAlertActionStyleCancel
-                                                                                        handler:nil]];
-                                                   [s presentViewController:errAlert animated:YES completion:nil];
-                                                 } else {
-                                                   [s reloadDocuments];
-                                                 }
+                                                 __strong typeof(self) ss = weakSelf;
+                                                 if (!ss) return;
+                                                 
+                                                 [ss showProgressWithMessage:@"Deleting..."];
+                                                 
+                                                 dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                                                  __strong typeof(self) sss = weakSelf;
+                                                  if (!sss) return;
+
+                                                   NSFileCoordinator *coordinator = [[NSFileCoordinator alloc] initWithFilePresenter:nil];
+                                                   __block NSError *delErr = nil;
+                                                   __block BOOL success = NO;
+                                                   
+                                                   [coordinator coordinateWritingItemAtURL:itemURL
+                                                                                   options:NSFileCoordinatorWritingForDeleting
+                                                                                     error:&delErr
+                                                                                byAccessor:^(NSURL *coordURL) {
+                                                     NSFileManager *fm = [[NSFileManager alloc] init];
+                                                     success = [fm removeItemAtURL:coordURL error:&delErr];
+                                                   }];
+                                                   
+                                                   dispatch_async(dispatch_get_main_queue(), ^{
+                                                     __strong typeof(self) sss = weakSelf;
+                                                     if (!sss) return;
+                                                     
+                                                     [sss reloadDocuments];
+                                                     
+                                                     if (!success) {
+                                                       [sss showSimpleAlertWithTitle:@"Delete failed"
+                                                                             message:delErr.localizedDescription ?: @"Unknown error"];
+                                                     } else {
+                                                       [sss showSimpleAlertWithTitle:@"Deleted" message:@"Item was deleted successfully."];
+                                                     }
+                                                   });
+                                                 });
                                                }]];
                 [s presentViewController:confirm animated:YES completion:nil];
               }];
@@ -905,13 +1001,21 @@ static const void *kSyncQueueSpecificKey = &kSyncQueueSpecificKey;
 
     UIAlertController *progress = self.progressAlert;
     if (progress && self.presentedViewController == progress) {
-      self.progressAlert = nil;
+      UIAlertController *stored = progress;
       [self dismissViewControllerAnimated:YES
                                completion:^{
+                                 if (self.progressAlert == stored) {
+                                   self.progressAlert = nil;
+                                 }
+                                 [self setExporting:NO];
+                                 [self setCancelRequested:NO];
                                  [self updateUIEnabled:YES];
                                  presentFinalAlert();
                                }];
     } else {
+      self.progressAlert = nil;
+      [self setExporting:NO];
+      [self setCancelRequested:NO];
       [self updateUIEnabled:YES];
       presentFinalAlert();
     }
